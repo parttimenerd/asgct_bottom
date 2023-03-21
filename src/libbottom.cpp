@@ -656,7 +656,12 @@ bool doesTopFrameContain(ASGCT_CallTrace &trace,
 
 /** returns true if successful */
 bool sendSignal(pthread_t thread) {
+#if defined(__APPLE__) && defined(__MACH__)
   return pthread_kill(thread, SIGPROF) == 0;
+#else
+  union sigval sigval;
+  return sigqueue(thread, SIGPROF, sigval) == 0;
+#endif
 }
 
 std::atomic<bool> asgctGSTInSignal;
