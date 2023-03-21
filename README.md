@@ -7,7 +7,7 @@ does not abort the stack walking too early.
 This is extracted from my [trace_validation](https://github.com/parttimenerd/trace_validation) project.
 Read more on the topic of correctness in my blog post [Validating Java Profiling APIs](https://mostlynerdless.de/blog/2023/03/14/validating-java-profiling-apis/).
 
-It's quite simple to use:
+It's quite simple to use (on Linux):
 
 ```sh
 
@@ -47,6 +47,8 @@ agCheckedTraces           :       4064    100.000%
 Using the `help` option prints all available options.
 
 **Important**: The agent might report false positives.
+
+**Important on Mac**: The agent supports Mac, but might crash with segfaults.
 
 If you find any broken traces, please check whether they are also appearing
 with OpenJDK master and report them either to me (via issues here, Twitter or mail) or by opening a JBS issue. I'm happy to help fixing them.
