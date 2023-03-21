@@ -95,13 +95,11 @@ private:
   T elem_;
 };
 
-pid_t get_thread_id() {
+pthread_t get_thread_id() {
 #if defined(__APPLE__) && defined(__MACH__)
-  uint64_t tid;
-  pthread_threadid_np(nullptr, &tid);
-  return (pid_t)tid;
+  return pthread_self();
 #else
-  return syscall(SYS_gettid);
+  return (pthread_t)syscall(SYS_gettid);
 #endif
 }
 
@@ -656,14 +654,9 @@ bool doesTopFrameContain(ASGCT_CallTrace &trace,
   return false;
 }
 
-const int ASGCT_GST_HANDLER = 2;
-const int ASGCT_GST_HANDLER2 = 3;
-
 /** returns true if successful */
-bool sendSignal(pthread_t thread, int handlerType) {
-  union sigval sigval;
-  sigval.sival_int = handlerType;
-  return sigqueue(thread, SIGPROF, sigval) == 0;
+bool sendSignal(pthread_t thread) {
+  return pthread_kill(thread, SIGPROF) == 0;
 }
 
 std::atomic<bool> asgctGSTInSignal;
@@ -760,7 +753,8 @@ bool checkASGCTWithGST(pthread_t thread, jthread javaThread) {
   agTrace.frames = agFrames;
   agTrace.env_id = env;
   // send the signal
-  if (!sendSignal(thread, ASGCT_GST_HANDLER)) {
+  if (!sendSignal(thread)) {
+    fprintf(stderr, "could not send signal to thread %ld\n", thread);
     return false;
   }
   // wait for the signal handler to be called
@@ -877,15 +871,7 @@ void checkASGCTWithGST(std::mt19937 &g) {
 }
 
 void signalHandler(int signum, siginfo_t *info, void *ucontext) {
-  switch (info->si_code) {
-  case SI_QUEUE:
-    switch (info->si_value.sival_int) {
-    case ASGCT_GST_HANDLER:
-      asgctGSTHandler((ucontext_t *)ucontext);
-      break;
-    }
-    break;
-  }
+  asgctGSTHandler((ucontext_t *)ucontext);
 }
 
 void sampleLoop() {
