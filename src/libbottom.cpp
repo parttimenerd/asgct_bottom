@@ -45,9 +45,6 @@ static jvmtiEnv *jvmti;
 static JavaVM *jvm;
 static JNIEnv *env;
 
-std::mutex threadsMutex;
-std::unordered_set<pthread_t> threads;
-
 typedef void (*SigAction)(int, siginfo_t *, void *);
 typedef void (*SigHandler)(int);
 typedef void (*TimerCallback)(void *);
@@ -575,7 +572,7 @@ bool doesFrameEqual(ASGCT_CallFrame frame, const char *className,
   return false;
 }
 
-/** 
+/**
  * does frame contain the className and any of the method names (if non-empty)
  */
 template <size_t N>
@@ -707,19 +704,16 @@ void printAGInfoIfNeeded() {
   }
 }
 
-std::optional<jthread> getAliveJThread(pthread_t thread) {
-  jthread javaThread = getJThreadForPThread(env, thread);
-  if (javaThread == nullptr) {
-    return {};
-  }
+bool checkJThread(jthread javaThread) {
   jint state;
   jvmti->GetThreadState(javaThread, &state);
+
   if (!((state & JVMTI_THREAD_STATE_ALIVE) == 1 &&
-        (state & JVMTI_THREAD_STATE_RUNNABLE) == 1) &&
+        (state | JVMTI_THREAD_STATE_RUNNABLE) == state) &&
       (state & JVMTI_THREAD_STATE_IN_NATIVE) == 0) {
-    return {};
+    return false;
   }
-  return javaThread;
+  return true;
 }
 
 bool isMethodOfValidTrace(jmethodID method) {
@@ -809,6 +803,7 @@ bool checkASGCTWithGST(pthread_t thread, jthread javaThread) {
          agCheckedTraces % printEveryNthValidTrace == 0) ||
         (!correct && printEveryNthBrokenTrace > 0 &&
          agBrokenTraces % printEveryNthBrokenTrace == 0)) {
+      fprintf(stderr, "====================\n");
       if (msg != nullptr) {
         fprintf(stderr, "%s\n", msg);
       }
@@ -850,7 +845,15 @@ bool checkASGCTWithGST(pthread_t thread, jthread javaThread) {
 
 void asgctGSTHandler(ucontext_t *ucontext) {
   asgctGSTInSignal = true;
+  JNIEnv* jni;
+  jvm->GetEnv((void**)&jni, JNI_VERSION_1_6);
+  if (jni == nullptr) {
+    agTrace.num_frames = 0;
+    asgctGSTInSignal = false;
+    return;
+  }
   waitOnAtomic(directlyBeforeGST, true);
+  agTrace.env_id = jni;
   asgct(&agTrace, maxDepth, ucontext);
   asgctGSTInSignal = false;
 }
@@ -868,8 +871,8 @@ void checkASGCTWithGST(std::mt19937 &g) {
   }
   std::shuffle(avThreads.begin(), avThreads.end(), g);
   for (auto thread : avThreads) {
-    auto javaThread = getAliveJThread(thread);
-    if (!javaThread || !checkASGCTWithGST(thread, *javaThread)) {
+    auto javaThread = getJThreadForPThread(env, thread);
+    if (!javaThread || !checkJThread(javaThread) || !checkASGCTWithGST(thread, javaThread)) {
       continue;
     }
   }
@@ -887,9 +890,7 @@ void sampleLoop() {
       (void **)&newEnv,
       nullptr); // important, so that the thread doesn't keep the JVM alive
 
-  if (setpriority(PRIO_PROCESS, 0, 0) != 0) {
-    std::cout << "Failed to setpriority: " << std::strerror(errno) << '\n';
-  }
+  setpriority(PRIO_PROCESS, 0, 0); // try to make the priority of this thread higher
 
   std::chrono::microseconds interval{sampleIntervalInUs};
   while (!shouldStop) {
