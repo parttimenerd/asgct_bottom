@@ -244,6 +244,7 @@ static int printStatsEveryNthTrace = 10000;
 static int printStatsEveryNthBrokenTrace = 5;
 static int sampleIntervalInUs = 1;
 static bool excludeWaitRelatedFrames = true;
+static int printBottomNFrames = 10;
 
 void printHelp() {
   printf(R"(Usage: -agentpath:libbottom.so=[,options]
@@ -275,6 +276,9 @@ Options:
   excludeWaitRelatedFrames=<bool> (default: true)
     exclude frames that contains "wait", "park" or "sleep" in the top frame method name
     this should reduce the number of false positives
+
+  printBottomNFrames=<int> (default: 10)
+    print the last N frames of the stack traces, 1024 to print all frames
   )");
 }
 
@@ -312,6 +316,8 @@ void parseOptions(char *options) {
       sampleIntervalInUs = std::stoi(value);
     } else if (key == "excludeWaitRelatedFrames") {
       excludeWaitRelatedFrames = value == "true";
+    } else if (key == "printBottomNFrames") {
+      printBottomNFrames = std::stoi(value);
     } else {
       printf("Invalid option: %s\n", tokenStr.c_str());
       printHelp();
@@ -480,9 +486,9 @@ void printGSTFrame(FILE *stream, jvmtiFrameInfo frame) {
   }
 }
 
-void printGSTTrace(FILE *stream, jvmtiFrameInfo *frames, int length) {
-  fprintf(stream, "GST Trace length: %d\n", length);
-  for (int i = 0; i < length; i++) {
+void printGSTTrace(FILE *stream, jvmtiFrameInfo *frames, int length,
+                   int printBottomN = MAX_DEPTH) {
+  for (int i = std::max(0, length - printBottomN); i < length; i++) {
     fprintf(stream, "Frame %d: ", i);
     printGSTFrame(stream, frames[i]);
     fprintf(stream, "\n");
@@ -515,18 +521,21 @@ void printASGCTFrame(FILE *stream, ASGCT_CallFrame frame) {
   }
 }
 
-void printASGCTFrames(FILE *stream, ASGCT_CallFrame *frames, int length) {
-  for (int i = 0; i < length; i++) {
+void printASGCTFrames(FILE *stream, ASGCT_CallFrame *frames, int length,
+                      int printBottomN = MAX_DEPTH) {
+  for (int i = std::max(0, length - printBottomN); i < length; i++) {
     fprintf(stream, "Frame %d: ", i);
     printASGCTFrame(stream, frames[i]);
     fprintf(stream, "\n");
   }
 }
 
-void printASGCTTrace(FILE *stream, ASGCT_CallTrace trace) {
+void printASGCTTrace(FILE *stream, ASGCT_CallTrace trace,
+                     int printBottomN = MAX_DEPTH) {
   fprintf(stream, "ASGCT Trace length: %d\n", trace.num_frames);
   if (trace.num_frames > 0) {
-    printASGCTFrames(stream, trace.frames, trace.num_frames);
+
+    printASGCTFrames(stream, trace.frames, trace.num_frames, printBottomN);
   }
   fprintf(stream, "ASGCT Trace end\n");
 }
@@ -807,8 +816,8 @@ bool checkASGCTWithGST(pthread_t thread, jthread javaThread) {
       if (msg != nullptr) {
         fprintf(stderr, "%s\n", msg);
       }
-      printASGCTTrace(stderr, agTrace);
-      printGSTTrace(stderr, gstFrames, gstCount);
+      printASGCTTrace(stderr, agTrace, printBottomNFrames);
+      printGSTTrace(stderr, gstFrames, gstCount, printBottomNFrames);
     }
     if (!correct) {
       if (doesTraceHaveBottomClass(agTrace, "java/lang/ClassLoader")) {
@@ -845,8 +854,8 @@ bool checkASGCTWithGST(pthread_t thread, jthread javaThread) {
 
 void asgctGSTHandler(ucontext_t *ucontext) {
   asgctGSTInSignal = true;
-  JNIEnv* jni;
-  jvm->GetEnv((void**)&jni, JNI_VERSION_1_6);
+  JNIEnv *jni;
+  jvm->GetEnv((void **)&jni, JNI_VERSION_1_6);
   if (jni == nullptr) {
     agTrace.num_frames = 0;
     asgctGSTInSignal = false;
@@ -872,7 +881,8 @@ void checkASGCTWithGST(std::mt19937 &g) {
   std::shuffle(avThreads.begin(), avThreads.end(), g);
   for (auto thread : avThreads) {
     auto javaThread = getJThreadForPThread(env, thread);
-    if (!javaThread || !checkJThread(javaThread) || !checkASGCTWithGST(thread, javaThread)) {
+    if (!javaThread || !checkJThread(javaThread) ||
+        !checkASGCTWithGST(thread, javaThread)) {
       continue;
     }
   }
@@ -890,7 +900,8 @@ void sampleLoop() {
       (void **)&newEnv,
       nullptr); // important, so that the thread doesn't keep the JVM alive
 
-  setpriority(PRIO_PROCESS, 0, 0); // try to make the priority of this thread higher
+  setpriority(PRIO_PROCESS, 0,
+              0); // try to make the priority of this thread higher
 
   std::chrono::microseconds interval{sampleIntervalInUs};
   while (!shouldStop) {
